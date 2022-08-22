@@ -37,33 +37,28 @@ pub fn led_task(
     let mem = MEM.put_with(leds::Esp32NeopixelMem::<25>::new);
     let mut leds = leds::Esp32Neopixel::<_, _, 25>::new(pin, rmt, mem)?;
 
-    const STEPS: usize = 4;
     let mut i = 0u8;
 
     let mut message = ScrollingRender::from_str("hello world")?;
 
     loop {
-        for _ in 0..12 {
-            for step in 0..STEPS {
-                if heart.load(std::sync::atomic::Ordering::Relaxed) {
-                    let it = font::FONT[0x3]
-                        .mask_with_x_offset(
-                            0,
-                            leds::with_positions(|_x, _y| RGB8::new(0xFD, 0x3F, 0x92)),
-                        )
-                        .map(|(_, v)| v.unwrap_or(RGB8::new(0, 0, 0)));
+        if heart.load(std::sync::atomic::Ordering::Relaxed) {
+            let it = font::FONT[0x3]
+                .mask_with_x_offset(
+                    0,
+                    leds::with_positions(|_x, _y| RGB8::new(0xFD, 0x3F, 0x92)),
+                )
+                .map(|(_, v)| v.unwrap_or(RGB8::new(0, 0, 0)));
 
-                    let _ = leds.write(GammaDither::<STEPS, 15>::dither(step, it));
-                } else {
-                    let it = message.render(|x, y| rgb(x, y, i as u8));
+            let _ = leds.write(GammaDither::<1, 15>::dither(0, it));
+        } else {
+            let it = message.render(|x, y| rgb(x, y, i as u8));
 
-                    let _ = leds.write(GammaDither::<STEPS, 15>::dither(step, it));
-                }
-
-                std::thread::sleep(Duration::from_micros(100));
-            }
-            i += 1;
+            let _ = leds.write(GammaDither::<1, 15>::dither(0, it));
         }
+
+        std::thread::sleep(Duration::from_millis(33 * 3));
+        i = i.wrapping_add(1);
         if message.step() {
             info!("message done! seeing if there's a new one");
             match ScrollingRender::from_str(CURRENT_MESSAGE.lock().unwrap().as_str()) {

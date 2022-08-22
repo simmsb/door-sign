@@ -15,11 +15,11 @@ use embedded_hal::digital::blocking::InputPin;
 use esp_idf_hal::gpio::{Gpio39, SubscribedInput};
 use esp_idf_hal::prelude::*;
 use esp_idf_sys as _;
+use esp_idf_sys::esp;
 
 pub mod bluetooth;
 pub mod display;
 pub mod dither;
-pub mod espnow;
 pub mod font;
 pub mod leds;
 pub mod message;
@@ -55,12 +55,19 @@ fn main() -> Result<()> {
 
     println!("Hello, world!");
 
+    // let pm_config = esp_idf_sys::esp_pm_config_esp32_t {
+    //     max_freq_mhz: 80,
+    //     min_freq_mhz: 40,
+    //     light_sleep_enable: true,
+    // };
+
+    // esp!(unsafe { esp_idf_sys::esp_pm_configure(&pm_config as *const _ as *const _) })?;
+
     let peripherals = Peripherals::take().ok_or_else(|| eyre!("Peripherals were already taken"))?;
 
     let pins = peripherals.pins;
 
     // let bus = Arc::new(Mutex::new(bus::Bus::<message::Message>::new(4)));
-    // let _espnow_data = espnow::espnow_setup(Arc::clone(&bus))?;
 
     bluetooth::init_ble(peripherals.uart0)?;
 

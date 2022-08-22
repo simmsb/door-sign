@@ -48,7 +48,8 @@ where
     FixedLengthSignal<{ LEN * 24 }>: Sized,
 {
     pub fn new(pin: P, channel: R, mem: &'a mut Esp32NeopixelMem<LEN>) -> color_eyre::Result<Self> {
-        let config = TransmitConfig::new().clock_divider(1);
+        let config = TransmitConfig::new()
+            .clock_divider(1);
         let tx = Transmit::new(pin, channel, &config)?;
 
         Ok(Self {
