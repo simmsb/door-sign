@@ -14,8 +14,9 @@ use color_eyre::{eyre::eyre, Result};
 use embedded_hal::digital::blocking::InputPin;
 use esp_idf_hal::gpio::{Gpio39, SubscribedInput};
 use esp_idf_hal::prelude::*;
+use esp_idf_svc::nvs::EspDefaultNvs;
+use esp_idf_svc::nvs_storage::EspNvsStorage;
 use esp_idf_sys as _;
-use esp_idf_sys::esp;
 
 pub mod bluetooth;
 pub mod display;
@@ -23,6 +24,7 @@ pub mod dither;
 pub mod font;
 pub mod leds;
 pub mod message;
+pub mod storage;
 
 macro_rules! pin_handler {
     ($pin:expr, $cb:expr) => {{
@@ -52,24 +54,18 @@ fn main() -> Result<()> {
     esp_idf_sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
     // color_eyre::install()?;
+    //
+    //
 
     println!("Hello, world!");
-
-    // let pm_config = esp_idf_sys::esp_pm_config_esp32_t {
-    //     max_freq_mhz: 80,
-    //     min_freq_mhz: 40,
-    //     light_sleep_enable: true,
-    // };
-
-    // esp!(unsafe { esp_idf_sys::esp_pm_configure(&pm_config as *const _ as *const _) })?;
 
     let peripherals = Peripherals::take().ok_or_else(|| eyre!("Peripherals were already taken"))?;
 
     let pins = peripherals.pins;
+    let nvs = Arc::new(EspDefaultNvs::new()?);
 
-    // let bus = Arc::new(Mutex::new(bus::Bus::<message::Message>::new(4)));
-
-    bluetooth::init_ble(peripherals.uart0)?;
+    bluetooth::init_ble(peripherals.uart0, Arc::clone(&nvs))?;
+    storage::init(EspNvsStorage::new_default(nvs, "display", true)?);
 
     let led_heart = Arc::new(AtomicBool::new(false));
 
@@ -78,7 +74,9 @@ fn main() -> Result<()> {
         let led_heart = Arc::clone(&led_heart);
         std::thread::Builder::new()
             .stack_size(8192)
-            .spawn(move || display::led_task(led_heart, pin, peripherals.rmt.channel0).unwrap())?
+            .spawn(move || {
+                display::led_task(led_heart, pin, peripherals.rmt.channel0).unwrap()
+            })?
     };
 
     let btn_callback = move |p: &Gpio39<SubscribedInput>| {

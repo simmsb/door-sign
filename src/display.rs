@@ -3,16 +3,18 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use embassy_util::Forever;
+use embedded_svc::storage::Storage;
 use esp_idf_hal::gpio::OutputPin;
 use esp_idf_hal::rmt::HwChannel;
 use smart_leds::{SmartLedsWrite, RGB8};
+use static_cell::StaticCell;
 use tracing::{error, info};
 
-use crate::bluetooth::CURRENT_MESSAGE;
+use crate::bluetooth::{CURRENT_MESSAGE, MESSAGE_UPDATED};
 use crate::dither::GammaDither;
 use crate::font::{self, ScrollingRender};
 use crate::leds;
+use crate::storage::STORAGE;
 
 fn rgb(x: u8, y: u8, offs: u8) -> RGB8 {
     fn conv_colour(c: cichlid::ColorRGB) -> smart_leds::RGB8 {
@@ -22,7 +24,7 @@ fn rgb(x: u8, y: u8, offs: u8) -> RGB8 {
     let v = cichlid::HSV {
         h: ((y / 4) as u8).wrapping_add(x * 10).wrapping_add(offs),
         s: 200,
-        v: 60,
+        v: 130,
     };
 
     conv_colour(v.to_rgb_rainbow())
@@ -33,13 +35,23 @@ pub fn led_task(
     pin: impl OutputPin,
     rmt: impl HwChannel,
 ) -> color_eyre::Result<()> {
-    static MEM: Forever<leds::Esp32NeopixelMem<25>> = Forever::new();
-    let mem = MEM.put_with(leds::Esp32NeopixelMem::<25>::new);
+    static MEM: StaticCell<leds::Esp32NeopixelMem<25>> = StaticCell::new();
+    let mem = MEM.init_with(leds::Esp32NeopixelMem::<25>::new);
     let mut leds = leds::Esp32Neopixel::<_, _, 25>::new(pin, rmt, mem)?;
 
     let mut i = 0u8;
 
-    let mut message = ScrollingRender::from_str("hello world")?;
+    let mut message = if let Ok(Some(text)) = STORAGE
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .get::<String>("message")
+    {
+        ScrollingRender::from_str(text.as_str())?
+    } else {
+        ScrollingRender::from_str("hello world")?
+    };
 
     loop {
         if heart.load(std::sync::atomic::Ordering::Relaxed) {
@@ -60,13 +72,24 @@ pub fn led_task(
         std::thread::sleep(Duration::from_millis(33 * 3));
         i = i.wrapping_add(1);
         if message.step() {
-            info!("message done! seeing if there's a new one");
-            match ScrollingRender::from_str(CURRENT_MESSAGE.lock().unwrap().as_str()) {
-                Ok(m) => {
-                    message = m;
-                }
-                Err(err) => {
-                    error!(?err, "Failed to update message");
+            info!("message done! updating to a new one");
+            if MESSAGE_UPDATED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                let text = CURRENT_MESSAGE.lock().unwrap();
+
+                STORAGE
+                    .get()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .set("message", &text.as_str())?;
+
+                match ScrollingRender::from_str(text.as_str()) {
+                    Ok(m) => {
+                        message = m;
+                    }
+                    Err(err) => {
+                        error!(?err, "Failed to update message");
+                    }
                 }
             }
         }

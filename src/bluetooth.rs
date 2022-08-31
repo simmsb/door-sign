@@ -1,35 +1,44 @@
 use core::ffi::{c_char, c_int};
 use std::cell::UnsafeCell;
 use std::ffi::{c_void, CStr};
-use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Mutex, Arc};
 
 use esp_idf_hal::serial::Uart;
+use esp_idf_svc::nvs::EspDefaultNvs;
 use esp_idf_sys::{
     ble_gap_adv_params, ble_gap_adv_set_fields, ble_gap_adv_start, ble_gap_conn_desc,
     ble_gap_conn_find, ble_gap_event, ble_gatt_access_ctxt, ble_gatt_chr_def,
     ble_gatt_register_ctxt, ble_gatt_svc_def, ble_gattc_notify_custom, ble_gatts_add_svcs,
     ble_gatts_count_cfg, ble_hs_adv_fields, ble_hs_cfg, ble_hs_id_copy_addr, ble_hs_id_infer_auto,
     ble_hs_mbuf_from_flat, ble_hs_mbuf_to_flat, ble_hs_util_ensure_addr, ble_store_util_status_rr,
-    ble_uuid128_t, ble_uuid_t, ble_uuid_to_str, esp,
-    esp_nimble_hci_and_controller_init, nimble_port_freertos_deinit, nimble_port_freertos_init,
-    nimble_port_init, nimble_port_run, os_mbuf, strlen, uart_config_t,
-    uart_driver_install, uart_event_t, uart_hw_flowcontrol_t_UART_HW_FLOWCTRL_RTS,
-    uart_param_config, uart_parity_t_UART_PARITY_DISABLE, uart_set_pin,
-    uart_stop_bits_t_UART_STOP_BITS_1, uart_word_length_t_UART_DATA_8_BITS, xQueueReceive,
-    QueueHandle_t, TickType_t, BLE_GAP_CONN_MODE_UND, BLE_GAP_DISC_MODE_GEN, BLE_GAP_EVENT_ADV_COMPLETE,
+    ble_uuid128_t, ble_uuid_t, ble_uuid_to_str, esp, esp_nimble_hci_and_controller_init,
+    nimble_port_freertos_deinit, nimble_port_freertos_init, nimble_port_init, nimble_port_run,
+    os_mbuf, strlen, uart_config_t, uart_driver_install, uart_event_t,
+    uart_hw_flowcontrol_t_UART_HW_FLOWCTRL_RTS, uart_param_config,
+    uart_parity_t_UART_PARITY_DISABLE, uart_set_pin, uart_stop_bits_t_UART_STOP_BITS_1,
+    uart_word_length_t_UART_DATA_8_BITS, xQueueReceive, QueueHandle_t, TickType_t,
+    BLE_GAP_CONN_MODE_UND, BLE_GAP_DISC_MODE_GEN, BLE_GAP_EVENT_ADV_COMPLETE,
     BLE_GAP_EVENT_CONNECT, BLE_GAP_EVENT_CONN_UPDATE, BLE_GAP_EVENT_DISCONNECT, BLE_GAP_EVENT_MTU,
     BLE_GATT_ACCESS_OP_READ_CHR, BLE_GATT_ACCESS_OP_WRITE_CHR, BLE_GATT_CHR_F_NOTIFY,
-    BLE_GATT_CHR_F_READ, BLE_GATT_CHR_F_WRITE,
-    BLE_GATT_REGISTER_OP_CHR, BLE_GATT_REGISTER_OP_DSC, BLE_GATT_REGISTER_OP_SVC,
-    BLE_GATT_SVC_TYPE_PRIMARY, BLE_HS_ADV_F_BREDR_UNSUP, BLE_HS_ADV_F_DISC_GEN,
-    BLE_HS_ADV_TX_PWR_LVL_AUTO, BLE_UUID_STR_LEN, BLE_UUID_TYPE_128,
+    BLE_GATT_CHR_F_READ, BLE_GATT_CHR_F_WRITE, BLE_GATT_REGISTER_OP_CHR, BLE_GATT_REGISTER_OP_DSC,
+    BLE_GATT_REGISTER_OP_SVC, BLE_GATT_SVC_TYPE_PRIMARY, BLE_HS_ADV_F_BREDR_UNSUP,
+    BLE_HS_ADV_F_DISC_GEN, BLE_HS_ADV_TX_PWR_LVL_AUTO, BLE_UUID_STR_LEN, BLE_UUID_TYPE_128,
     CONFIG_BT_NIMBLE_MAX_CONNECTIONS, UART_PIN_NO_CHANGE,
 };
 use once_cell::sync::Lazy;
 use tracing::{error, info};
 
-pub static CURRENT_MESSAGE: Lazy<Mutex<String>> =
-    Lazy::new(|| Mutex::new("Hello World".to_owned()));
+pub static CURRENT_MESSAGE: Lazy<Mutex<String>> = Lazy::new(|| {
+    let msg = if let Ok(msg) = std::fs::read_to_string("/message.txt") {
+        msg
+    } else {
+        "Hello World".to_owned()
+    };
+
+    Mutex::new(msg)
+});
+pub static MESSAGE_UPDATED: AtomicBool = AtomicBool::new(false);
 
 const BLE_UUID_TYPE_128_: ble_uuid_t = ble_uuid_t {
     type_: BLE_UUID_TYPE_128 as u8,
@@ -165,6 +174,7 @@ unsafe extern "C" fn ble_svc_gatt_handler(
             };
 
             CURRENT_MESSAGE.lock().unwrap().replace_range(.., s);
+            MESSAGE_UPDATED.store(true, std::sync::atomic::Ordering::SeqCst);
             info!(s, "Updated message");
         }
         _ => {}
@@ -180,7 +190,7 @@ unsafe fn ble_spp_server_advertise() {
         tx_pwr_lvl: BLE_HS_ADV_TX_PWR_LVL_AUTO as i8,
         name: name as *const _,
         name_len: strlen(name) as u8,
-        adv_itvl: 8000,
+        adv_itvl: 1000,
         ..Default::default()
     };
 
@@ -391,17 +401,8 @@ unsafe fn ble_uart_init<U: Uart + Send + 'static>(uart: U) -> color_eyre::Result
     Ok(())
 }
 
-pub fn init_ble<U: Uart + Send + 'static>(uart: U) -> color_eyre::Result<()> {
+pub fn init_ble<U: Uart + Send + 'static>(uart: U, _nvs: Arc<EspDefaultNvs>) -> color_eyre::Result<()> {
     unsafe {
-        if let Err(err) = esp!(esp_idf_sys::nvs_flash_init()) {
-            if err.code() == esp_idf_sys::ESP_ERR_NVS_NO_FREE_PAGES
-                || err.code() == esp_idf_sys::ESP_ERR_NVS_NEW_VERSION_FOUND
-            {
-                esp!(esp_idf_sys::nvs_flash_erase())?;
-                esp!(esp_idf_sys::nvs_flash_init())?;
-            }
-        }
-
         info!("Initializing bluetooth");
 
         esp!(esp_nimble_hci_and_controller_init())?;
